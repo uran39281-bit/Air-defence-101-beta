@@ -1,0 +1,7 @@
+build/
+dist/
+node_modules/
+*.keystore
+*.jks
+local.properties
+test-output/
