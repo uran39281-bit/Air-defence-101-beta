@@ -11,7 +11,7 @@ page.on('pageerror',e=>errors.push(e.message));
 await page.route('https://airdefense.local/**',async route=>{const url=new URL(route.request().url());const file=path.join(process.cwd(),'web',url.pathname==='/'?'index.html':url.pathname);const ext=path.extname(file),types={'.html':'text/html','.css':'text/css','.js':'application/javascript','.png':'image/png'};if(!fs.existsSync(file))return route.fulfill({status:404,body:'Missing asset'});await route.fulfill({status:200,contentType:types[ext]||'text/plain',body:fs.readFileSync(file)});});
 await page.goto('https://airdefense.local/');
 await page.screenshot({path:'test-output/menu.png'});
-await page.locator('#menu-guide').click();assert.ok(await page.locator('#guide').isVisible());await page.locator('#close-guide').click();
+await page.locator('#menu-guide').click();assert.ok(await page.locator('#guide').isVisible());await page.screenshot({path:'test-output/guide.png'});await page.locator('#close-guide').click();
 await page.locator('#play').click();
 await page.evaluate(()=>{window.AirDefense.pause();window.AirDefense.simulation.step(30);window.AirDefense.render();});
 assert.ok(await page.locator('.track-row').count()>0);
@@ -29,5 +29,7 @@ await page.locator('#radar-toggle').click();await page.evaluate(()=>{window.AirD
 await page.locator('#reset').click();assert.equal(await page.evaluate(()=>window.AirDefense.simulation.contacts.size),0);await page.evaluate(()=>window.AirDefense.render());
 await page.setViewportSize({width:915,height:412});await page.screenshot({path:'test-output/phone.png'});
 const broken=await page.evaluate(()=>[...document.images].filter(i=>!i.naturalWidth).map(i=>i.src));assert.deepEqual(broken,[]);
+await page.locator('#speed').click();assert.equal(await page.evaluate(()=>window.AirDefense.state.timeScale),2);await page.locator('#speed').click();await page.locator('#speed').click();assert.equal(await page.evaluate(()=>window.AirDefense.state.timeScale),8);
+assert.equal(await page.evaluate(()=>window.AirDefense.state.paused),true);const pausedTime=await page.evaluate(()=>window.AirDefense.simulation.time);await page.waitForTimeout(150);assert.equal(await page.evaluate(()=>window.AirDefense.simulation.time),pausedTime);
 assert.deepEqual(errors,[]);console.log('UI PASS: menu, guide, contact selection, fire, lock, unlock, auto, IRST, radar OFF, RESET, phone layout, icon paths.');
 await browser.close();

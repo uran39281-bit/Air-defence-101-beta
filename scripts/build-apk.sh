@@ -20,6 +20,6 @@ mkdir -p "$(dirname "$KEY")"
 if [[ ! -f "$KEY" ]]; then
   keytool -genkeypair -noprompt -keystore "$KEY" -storepass android -keypass android -alias beta -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=AIR DEFENSE Beta Development"
 fi
-"$TOOLS/apksigner" sign --ks "$KEY" --ks-key-alias beta --ks-pass pass:android --key-pass pass:android --out dist/Air-Defense-101-Beta-v0.1.0.apk "$OUT/aligned.apk"
-"$TOOLS/apksigner" verify --verbose dist/Air-Defense-101-Beta-v0.1.0.apk
-"$TOOLS/aapt" dump badging dist/Air-Defense-101-Beta-v0.1.0.apk
+"$TOOLS/apksigner" sign --ks "$KEY" --ks-key-alias beta --ks-pass pass:android --key-pass pass:android --out dist/Air-Defense-101-Beta-v0.2.0.apk "$OUT/aligned.apk"
+"$TOOLS/apksigner" verify --verbose dist/Air-Defense-101-Beta-v0.2.0.apk
+"$TOOLS/aapt" dump badging dist/Air-Defense-101-Beta-v0.2.0.apk

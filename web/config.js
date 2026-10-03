@@ -2,7 +2,7 @@
 export const EQUIPMENT = Object.freeze({
   name: 'MIM-225 Horizon Shield', detection: 455, track: 315, lock: 310,
   tracks: 24, channels: 8, role: 'Strategic defense',
-  nctr: ['Su-27','MiG-29','Su-25','Tu-95','Tu-160'],
+  nctr: ['Su-27','MiG-29','MiG-25','Tu-160'],
   missile: {name:'MIM-225A',range:305,guidance:'ACTIVE_RADAR',maneuver:4,explosive:140,warhead:'blast-fragmentation'}
 });
 export const BETA = Object.freeze({
@@ -17,8 +17,7 @@ export const BETA = Object.freeze({
   guidanceLoss:4, reacquireTime:4, irSeekerRange:24, irFov:50,
   turnBaseDegrees:4, turnDegreesPerRating:2.8, fuzeKm:.16,
   damageScale:.020, targetHealth:100, scenarioSeconds:720,
-  spawnInterval:36, maxAircraft:12, attackerReactionDelay:4,
-  attackerEvasion:.18, attackRadius:4, maxPlayerHits:4,
+  spawnInterval:36, maxAircraft:12, maxPlayerHits:4,
   idTypeSeconds:12, idAllegianceSeconds:20, idEvidenceRange:220,
   startAircraft:6, seed:225101
 });
