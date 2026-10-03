@@ -2,7 +2,7 @@
 
 Offline Android radar-defense game rebuilt from the [Google Doc guide](https://docs.google.com/document/d/170pFAgDHbSvsvS7WbFxBIpvjbH0DjT8GjzXJBw4zvy4/edit). The full source Google Docs are excluded from this public backup. The original supplied artwork is preserved in `reference-assets/`; optimized copies are in `web/assets/`.
 
-[Download the signed beta APK](releases/Air-Defense-101-Beta-v0.2.0.apk)
+[Download the signed beta APK](releases/Air-Defense-101-Beta-v0.2.1.apk)
 
 Requires Android 8 or later and an updated Android System WebView. Landscape interface. No network permission, ads, account, or external dependency at runtime. Package ID: `com.prime.airdefense.beta`.
 
@@ -13,6 +13,14 @@ Requires Android 8 or later and an updated Android System WebView. Landscape int
 Start the beta exercise. Wait for two radar sweeps to build TWS tracks. Select a contact on the radar, in the TWS list, or with NEXT TARGET. Select a ready launcher, then FIRE. MIM-225A is active radar homing and needs a usable track within its nominal envelope; it does **not** need a hard lock. Use time acceleration for long-range missile flights. Two missiles may be needed for a glancing hit. Keep checking the battle log and channel count.
 
 Tap the selected launcher again to reload early; empty launchers reload automatically. The exercise lasts 12 simulation minutes, or until four aircraft attacks hit the battery. It starts with six aircraft and adds attackers over time. Only Su-27, MiG-29, MiG-25, and Tu-160 spawn. MiG-25 is an unarmed intrusion/diversion contact; other aircraft carry abstract unguided bombs. Battery damage occurs at bomb impact, and released bombs persist after the carrier disengages or is destroyed. No hostile missiles or friendly aircraft spawn.
+
+## v0.2.1 update
+
+The latest guide adds AI decision flow rules and a weapon reference catalogue. The operator guide now lists 25 specific Russian weapon variants and shows original aircraft roles separately from assigned exercise tasks. Catalogue entries preserve Mach speed, Wiki launch range, seeker lock range, mass, filler, TNT equivalent, and unknown carrier release limits as separate fields. Anti-radiation weapons use passive-emitter guidance labels. WP-2/WP-3 remain disabled and the current exercise still uses BETA-BOMB-250; the catalogue grants no new weapon spawns or aircraft loadouts.
+
+Reaction timers now belong to a perceived warning episode. Refreshes retain a timer, while a genuinely new episode cannot reuse an expired reaction. Visual urgency estimates require sustained range observations; sparse, ambiguous or receding observations retain unknown time to impact. High-confidence attack commitment under a fire-control warning requires an imminent stable release, adequate energy and acceptable perceived risk. Credible missile threats still take priority. Critical control loss causes permanent disengagement.
+
+Bomb release requires 0.5 seconds of stable flight, no more than 1.3 G, vertical speed no more than 15 m/s, and a provisional gameplay envelope of 0.6–12 km altitude and 360–2880 km/h. These are editable limits for the abstract beta bomb, separate from the catalogue’s unknown real-weapon carrier release limits. Countermeasures use at most four three-unit bursts per warning episode, within existing cooldown, inventory and reserve rules. Mission configuration may provide objective, intrusion and exit coordinates; aircraft follow waypoint altitude and reject unreachable flight waypoints.
 
 ## Implemented
 
@@ -60,7 +68,7 @@ Equipment defaults live in [web/config.js](web/config.js); aircraft, receiver an
 | IR seeker range / FOV | 24 km / 50° |
 | Turn conversion | 4 + 2.8×maneuverability degrees/s |
 | Proximity radius / damage scale | 0.16 km / 0.020 |
-| AI ordinary / emergency reaction | 2–4 s / 1–2 s after receiver processing; sampled once per urgency change |
+| AI ordinary / emergency reaction | 2–4 s / 1–2 s after receiver processing; sampled once per warning episode |
 | GEN 1 / GEN 2 processing and memory | 1.2 / 0.7 s processing; 6 / 8 s signal memory |
 | Visual missile observation | 8 km before weather factor, 130° FOV, 1.2 s acquisition; 12 s memory; MAWS off |
 | Countermeasures | Combined chaff/flare; 3 per burst, 1.5 s cooldown, 3 s effect, 10% reserve except observed missile or classified seeker |
@@ -84,7 +92,7 @@ RWR receives modeled emissions through band, waveform, strength, coverage, beam 
 
 Aircraft decisions consume anonymous perceived warnings and observations, mission status, health, performance, ammunition and memory. They do not consume player selections, true lock IDs, exact global missile locations, channel counts or unseen launch state. Normal caution, defense, missile evasion, reassessment, attack runs, permanent disengagement and exit use held maneuvers with reaction timers. Search-only caution may continue a close attack approach. Two interrupted/missed approaches abort; exhausted ordnance exits. Multiple perceived threats are prioritized by class and uncertain observation-derived urgency. Decoys affect seeker reception probabilistically with acquisition dwell and resistance; they never automatically destroy a missile. Illumination preserves a CM reserve; observed missiles and classified seekers may consume it.
 
-Current limits: flat 2.5D exercise airspace with altitude, no terrain masking or spatial cloud model; IR contrast/aspect behavior is simplified to a weather-adjusted range gate; recognition is synthetic exercise evidence; one battery fire-control lock; no tech tree, economy, story missions, sound, hostile missile spawning, or persistent campaign progress. Damage currently implements the supplied blast-fragmentation warhead; other warhead types are future extensions. Seeker and decoy acquisition use simplified angular/range models. Notching is a beam attempt with no guaranteed radar-break mechanic. Visual sensing uses configurable range, FOV, elevation, dwell, weather/night gates and a line-of-sight hook; default terrain is flat and unobstructed. Bomb explosive rating is abstract; impact damage is one battery hit within the configured radius. Those limits are deliberately visible rather than presented as completed real-world modeling.
+Current limits: flat 2.5D exercise airspace with altitude, no terrain masking or spatial cloud model; IR contrast/aspect behavior is simplified to a weather-adjusted range gate; recognition is synthetic exercise evidence; one battery fire-control lock; no tech tree, economy, story missions, sound, hostile missile spawning, or persistent campaign progress. Damage currently implements the supplied blast-fragmentation warhead; other warhead types are future extensions. Seeker and decoy acquisition use simplified angular/range models. Visual missile range estimates remain noisy; sustained observations reduce false urgency but do not guarantee a correct time-to-impact estimate. Notching is a beam attempt with no guaranteed radar-break mechanic. Visual sensing uses configurable range, FOV, elevation, dwell, weather/night gates and a line-of-sight hook; default terrain is flat and unobstructed. Bomb explosive rating is abstract; impact damage is one battery hit within the configured radius. Those limits are deliberately visible rather than presented as completed real-world modeling.
 
 ## Development and verification
 
@@ -96,9 +104,9 @@ npm run serve
 # Open http://localhost:8080
 ```
 
-41 deterministic simulation checks cover track capacity, measurement prediction/correction, launch/lock prerequisites, active seeker states, both channel overflow cases, radar OFF, RESET, IR independence, track expiration, inventory, damage, moving-target interception, scan intervals, and icon paths. The aircraft suite additionally checks emission reception/classification, receiver and reaction delays, observation memory, no direct launch/selection awareness, finite flight/G limits, CM resistance and exhaustion, permanent abort/exit, meaningful WP-0 routes, delayed bombs, and paused simulation state.
+58 deterministic simulation checks cover track capacity, measurement prediction/correction, launch/lock prerequisites, active seeker states, both channel overflow cases, radar OFF, RESET, IR independence, track expiration, inventory, damage, moving-target interception, scan intervals, and icon paths. The aircraft suite additionally checks emission reception/classification, receiver and reaction delays, observation memory, no direct launch/selection awareness, finite flight/G limits, CM resistance and exhaustion, permanent abort/exit, meaningful WP-0 routes, delayed bombs, and paused simulation state.
 
-`scripts/qa-browser.mjs` adds real UI interaction checks and desktop/phone-sized screenshots. Install Playwright separately to run it; `CHROME_PATH` may select a local Chromium executable. Browser validation covers menu/guide, target selection, fire, lock/unlock, AUTO TRACK, IRST, RADAR OFF, RESET, and all visible image paths. APK manifest and v2/v3 signatures are verified by the build script. A physical Android installation has not been tested in this environment.
+`scripts/qa-browser.mjs` adds real UI interaction checks and desktop/phone-sized screenshots. Install Playwright separately to run it; `CHROME_PATH` may select a local Chromium executable. Browser validation covers menu/guide and catalogue, pause/time controls, target selection, fire, lock/unlock, AUTO TRACK, IRST, RADAR OFF, RESET, and all visible image paths. APK manifest and v2/v3 signatures are verified by the build script. A physical Android installation has not been tested in this environment.
 
 ### Build Android
 
@@ -110,4 +118,4 @@ export AIR_DEFENSE_KEYSTORE=/private/path/to/beta.keystore
 bash scripts/build-apk.sh
 ```
 
-The output is `dist/Air-Defense-101-Beta-v0.2.0.apk`. This beta uses a development signing identity (`beta` alias; development password `android`). Keep the key out of this public repository and reuse it for locally built updates. Increase versionCode/versionName for each update. The GitHub Actions workflow also tests and builds, but creates an ephemeral development key unless configured separately; its APK may require uninstalling a differently signed installation. The checked-in downloadable APK uses the retained local beta key.
+The output is `dist/Air-Defense-101-Beta-v0.2.1.apk`. This beta uses a development signing identity (`beta` alias; development password `android`). Keep the key out of this public repository and reuse it for locally built updates. Increase versionCode/versionName for each update. The GitHub Actions workflow also tests and builds, but creates an ephemeral development key unless configured separately; its APK may require uninstalling a differently signed installation. The checked-in downloadable APK uses the retained local beta key.

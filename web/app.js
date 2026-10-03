@@ -1,5 +1,7 @@
 import {Simulation,rangeOf,bearingOf} from './engine.js';
 import {sweepInterval,ICONS} from './config.js';
+import {AIRCRAFT} from './aircraft-config.js';
+import {RUSSIAN_WEAPON_CATALOGUE,FIELD_STATUS} from './weapon-catalogue.js';
 const $=id=>document.getElementById(id),stage=$('stage'),canvas=$('radar'),ctx=canvas.getContext('2d');
 let sim=new Simulation(),playing=false,paused=false,timeScale=1,viewRange=450,last=performance.now(),uiTimer=0,lastLog=-1;
 const images={};for(const file of Object.values(ICONS)){const img=new Image();img.src='assets/'+file;images[file]=img;}
@@ -10,6 +12,15 @@ function timestamp(t){return String(Math.floor(t/60)).padStart(2,'0')+':'+String
 function start(){sim=new Simulation();playing=true;paused=false;timeScale=1;lastLog=-1;$('menu').classList.add('hidden');$('end').classList.add('hidden');$('pause').textContent='PAUSE';$('speed').textContent='1× TIME';renderUI();}
 $('play').onclick=start;$('restart').onclick=start;
 let guidePaused=false;function openGuide(){guidePaused=paused;paused=true;$('guide').classList.remove('hidden');}function closeGuide(){$('guide').classList.add('hidden');paused=guidePaused;}
+function addReferenceField(dl,label,value){const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=value;dl.append(dt,dd);}
+for(const p of Object.values(AIRCRAFT)){const row=document.createElement('dl');row.className='reference-fields';addReferenceField(row,p.name,p.role+' · TASK: '+p.mission);$('aircraft-reference').append(row);}
+function referenceValue(w,key,unit=''){const status=w.fieldStatus[key];if(status===FIELD_STATUS.UNKNOWN)return 'Not listed';if(status===FIELD_STATUS.NOT_APPLICABLE)return 'N/A';if(status===FIELD_STATUS.RELEASE_DEPENDENT)return 'Depends on release';return w[key]+(unit?' '+unit:'');}
+for(const w of RUSSIAN_WEAPON_CATALOGUE){const entry=document.createElement('details');entry.className='weapon-entry';entry.dataset.weaponId=w.id;const title=document.createElement('summary');title.textContent=w.name+' · '+w.guidance.label;entry.append(title);const dl=document.createElement('dl');dl.className='reference-fields';
+  for(const [label,key,unit]of [['Max missile speed','maxSpeedMach','Mach'],['Wiki launch range','launchRangeKm','km'],['Max travel range','maxTravelRangeKm','km'],['Carrier max release speed','maxAircraftReleaseSpeedKmh','km/h'],['Guidance lifetime','guidanceTimeSeconds','s'],['Weapon mass','massKg','kg'],['Explosive filler','explosiveFillerMassKg','kg'],['TNT equivalent','tntEquivalentKg','kg'],['Max G','maxG','G']])addReferenceField(dl,label,referenceValue(w,key,unit));
+  addReferenceField(dl,'Seeker lock',w.seekerLockRangeByAspectKm?'Rear '+w.seekerLockRangeByAspectKm.rear+' km / all-aspect '+w.seekerLockRangeByAspectKm.allAspect+' km':referenceValue(w,'seekerLockRangeKm','km'));
+  addReferenceField(dl,'Wiki seeker band',w.seekerBandLabels?.join(' / ')||(w.category==='UNGUIDED_BOMB'?'N/A':'Not listed'));
+  addReferenceField(dl,'Role',w.role.replaceAll('_',' '));addReferenceField(dl,'Source',w.provenance.reportedPanel+' · supplied guide values');
+  if(w.notes.length)addReferenceField(dl,'Notes',w.notes.join(' '));entry.append(dl);$('weapon-catalogue').append(entry);}
 $('help').onclick=openGuide;$('menu-guide').onclick=openGuide;$('close-guide').onclick=closeGuide;
 $('pause').onclick=()=>{paused=!paused;$('pause').textContent=paused?'RESUME':'PAUSE';};
 $('speed').onclick=()=>{timeScale=timeScale===8?1:timeScale*2;$('speed').textContent=timeScale+'× TIME';};

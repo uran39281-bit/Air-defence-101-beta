@@ -1,4 +1,4 @@
-import {AIRCRAFT,RWR_PROFILES,RWR_TIERS,AI_DEFAULTS} from './aircraft-config.js';
+import {AIRCRAFT,RWR_PROFILES,AI_DEFAULTS} from './aircraft-config.js';
 
 export const clamp=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
 export const angleDelta=(a,b)=>Math.atan2(Math.sin(a-b),Math.cos(a-b));
@@ -14,15 +14,16 @@ export function createAircraft(type,id,position,settings={},seed=1){
   const cfg={...AI_DEFAULTS,...settings};
   const rng=seeded(seed);
   const exitAngle=heading({x:0,y:0},position)+Math.PI;
-  const mission={objective:{x:0,y:0,z:0},exit:{x:Math.cos(exitAngle)*cfg.exitRadius,y:Math.sin(exitAngle)*cfg.exitRadius,z:10},intrusion:{x:-position.x*.5,y:-position.y*.5,z:position.z}};
+  const mission={objective:{x:0,y:0,z:0},exit:{x:Math.cos(exitAngle)*cfg.exitRadius,y:Math.sin(exitAngle)*cfg.exitRadius,z:10},intrusion:{x:-position.x*.5,y:-position.y*.5,z:position.z},task:(settings.preset||profile.presets[0])==='WP-0'?'INTRUSION / DIVERSION':'BOMB STRIKE',...settings.mission};
+  for(const point of ['objective','exit','intrusion']){if(!Number.isFinite(mission[point]?.x)||!Number.isFinite(mission[point]?.y)||!Number.isFinite(mission[point]?.z))throw Error('Invalid mission '+point+' waypoint');if(point!=='objective'&&(mission[point].z<cfg.safeAltitude||mission[point].z>profile.ceiling/1000))throw Error('Unreachable mission '+point+' altitude');}
   const a={id,type,profile,allegiance:'HOSTILE',...position,angle:heading(position,mission.objective),
-    speed:0,health:100,alive:true,retreat:false,exited:false,actualG:1,maxCommandedG:profile.commandedG,
-    verticalSpeed:0,heat:1,signature:profile.signature,stealth:profile.stealth,
+    speed:0,health:100,controlAuthority:settings.controlAuthority??1,alive:true,retreat:false,exited:false,actualG:1,maxCommandedG:profile.commandedG,
+    verticalSpeed:0,releaseStableFor:0,heat:1,signature:profile.signature,stealth:profile.stealth,
     preset:settings.preset||profile.presets[0],ordnance:settings.preset==='WP-0'?0:profile.bombs,cm:profile.countermeasures,cmReady:0,bombReady:0,
     rwr:{...RWR_PROFILES[profile.rwr],...settings.rwr},maws:cfg.maws,mission,rng,
-    perception:{warnings:new Map(),pending:new Map(),observed:new Map(),visualDwell:new Map(),emitterAliases:new Map(),visualAliases:new Map(),nextEmitter:0,nextVisual:0},
+    perception:{warnings:new Map(),pending:new Map(),observed:new Map(),visualDwell:new Map(),emitterAliases:new Map(),visualAliases:new Map(),nextEmitter:0,nextVisual:0,nextEpisode:0},
     ai:{state:'MISSION APPROACH',stateSince:0,nextDecision:0,pending:null,clearSince:null,
-      failedRuns:0,wasAttacking:false,primary:null,maneuver:null,riskSince:null},cfg};
+      failedRuns:0,wasAttacking:false,primary:null,maneuver:null,riskSince:null,reactions:new Map(),dangerousApproaches:[],confidence:cfg.confidence,perceivedRisk:0},cfg};
   if(!profile.presets.includes(a.preset))throw Error('Unsupported weapon preset '+a.preset+' for '+type);
   a.speed=aircraftSpeedCap(a)*cfg.initialCruise;
   return a;
@@ -39,7 +40,7 @@ export function aircraftSpeedCap(a){
 export function achievableG(a){
   const cap=aircraftSpeedCap(a),energy=clamp(a.speed/Math.max(cap,.01),.15,1);
   return Math.min(a.profile.structuralG,a.profile.commandedG,
-    1+(a.profile.commandedG-1)*Math.min(1,energy*energy*1.35)*(.4+.6*clamp(a.health/100,0,1)));
+    1+(a.profile.commandedG-1)*Math.min(1,energy*energy*1.35)*(.4+.6*clamp(a.health/100,0,1))*clamp(a.controlAuthority,0,1));
 }
 
 export function canReceive(a,e,time,lineOfSight=()=>true){
@@ -55,8 +56,8 @@ export function canReceive(a,e,time,lineOfSight=()=>true){
 function classify(p,e,rng){
   const known=p.library.includes(e.family);
   if(!known||rng()<p.ambiguousChance)return {class:'UNKNOWN EMITTER',confidence:.4,priority:1};
-  if(e.waveform==='ACTIVE_SEEKER'&&p.seeker)return {class:'MISSILE SEEKER',confidence:.85,priority:3};
-  if(e.waveform==='ILLUMINATION'&&p.illumination)return {class:'ILLUMINATION',confidence:.8,priority:3};
+  if(e.waveform==='ACTIVE_SEEKER'&&p.seeker)return {class:'MISSILE SEEKER',confidence:.85,priority:3,guidance:'ACTIVE_RADAR'};
+  if(e.waveform==='ILLUMINATION'&&p.illumination)return {class:'ILLUMINATION',confidence:.8,priority:3,guidance:'SEMI_ACTIVE_RADAR'};
   if((e.waveform==='FIRE_CONTROL'||e.waveform==='ILLUMINATION')&&p.fireControl)return {class:'FIRE CONTROL',confidence:.75,priority:2};
   if((e.waveform==='SEARCH'||e.waveform==='PULSE_DOPPLER')&&p.search)return {class:'SEARCH',confidence:.7,priority:1};
   return {class:'UNKNOWN EMITTER',confidence:.4,priority:1};
@@ -64,6 +65,7 @@ function classify(p,e,rng){
 
 export function receiveEmissions(a,emissions,time,lineOfSight){
   const sense=a.perception,p=a.rwr;
+  for(const [id,w]of sense.warnings)if(time>w.expires)sense.warnings.delete(id);
   for(const e of emissions){
     if(!canReceive(a,e,time,lineOfSight)||a.rng()<p.missChance)continue;
     let alias=sense.emitterAliases.get(e.key);
@@ -73,13 +75,13 @@ export function receiveEmissions(a,emissions,time,lineOfSight){
     b=p.sectors?((Math.round(b/(360/p.sectors))*(360/p.sectors))%360):((b+(a.rng()*2-1)*p.bearingError+360)%360);
     const received={id:alias,...reading,bearing:b,time,source:'RWR'};
     const current=sense.warnings.get(alias);
-    if(current&&current.class===reading.class){sense.warnings.set(alias,{...received,expires:time+p.memory});continue;}
+    if(current&&current.class===reading.class){sense.warnings.set(alias,{...received,episode:current.episode,expires:time+p.memory});continue;}
     const pending=sense.pending.get(alias);
-    if(!pending||pending.class!==reading.class)sense.pending.set(alias,{...received,ready:time+p.delay,lastReceived:time});
+    if(!pending||pending.class!==reading.class)sense.pending.set(alias,{...received,episode:current?.episode??++sense.nextEpisode,ready:time+p.delay,lastReceived:time});
     else Object.assign(pending,{lastReceived:time,bearing:b,confidence:reading.confidence});
   }
   for(const [id,w]of sense.pending){
-    if(time>=w.ready){sense.warnings.set(id,{id:w.id,class:w.class,confidence:w.confidence,priority:w.priority,bearing:w.bearing,time:w.lastReceived,source:'RWR',expires:w.lastReceived+p.memory});sense.pending.delete(id);}
+    if(time>=w.ready){sense.warnings.set(id,{id:w.id,class:w.class,confidence:w.confidence,priority:w.priority,bearing:w.bearing,time:w.lastReceived,guidance:w.guidance||'UNKNOWN',episode:w.episode,source:'RWR',expires:w.lastReceived+p.memory});sense.pending.delete(id);}
   }
   for(const [id,w]of sense.warnings)if(time>w.expires)sense.warnings.delete(id);
   if(sense.warnings.size>p.capacity){const sorted=[...sense.warnings.values()].sort((a,b)=>b.priority-a.priority||b.time-a.time);sense.warnings=new Map(sorted.slice(0,p.capacity).map(w=>[w.id,w]));}
@@ -87,6 +89,7 @@ export function receiveEmissions(a,emissions,time,lineOfSight){
 
 export function observeMissiles(a,missiles,time,dt,lineOfSight=()=>true){
   const cfg=a.cfg,sense=a.perception;
+  for(const [id,o]of sense.observed)if(time>o.expires)sense.observed.delete(id);
   for(const m of missiles){
     if(!m.alive)continue;
     const d=distance(a,m),az=heading(a,m),elevation=Math.atan2(m.z-a.z,Math.hypot(m.x-a.x,m.y-a.y));
@@ -97,9 +100,17 @@ export function observeMissiles(a,missiles,time,dt,lineOfSight=()=>true){
     if(!maws&&dwell<cfg.visualAcquire)continue;
     let alias=sense.visualAliases.get(m.id);if(!alias){alias='OBS-'+(++sense.nextVisual);sense.visualAliases.set(m.id,alias);}
     const previous=sense.observed.get(alias),measuredRange=d*(.8+.4*a.rng()),b=(bearing(az)+(a.rng()*2-1)*8+360)%360;
+    const history=[...(previous?.rangeHistory||[]),{time,range:measuredRange}].filter(p=>time-p.time<=cfg.ttiObservationWindow+1);
     let closing=null,tti=null;
-    if(previous&&time>previous.time){closing=(previous.rangeEstimate-measuredRange)/(time-previous.time);if(closing>.02)tti=clamp(measuredRange/closing,0,120);}
-    sense.observed.set(alias,{id:alias,class:'OBSERVED MISSILE',source:maws?'MAWS':'VISUAL',priority:4,confidence:.8,bearing:b,rangeEstimate:measuredRange,closingEstimate:closing,timeToImpactEstimate:tti,time,expires:time+cfg.missileMemory,guidance:'UNKNOWN'});
+    // Range remains noisy. Infer urgency only from sustained observations,
+    // never from the missile's hidden velocity, target or true time to impact.
+    if(history.length>=4&&time-history[0].time>=cfg.ttiObservationWindow){
+      const first=history.slice(0,2),last=history.slice(-2),mean=xs=>xs.reduce((n,p)=>n+p.range,0)/xs.length;
+      const span=(last[0].time+last[1].time-first[0].time-first[1].time)/2;
+      const change=mean(first)-mean(last),margin=Math.max(...history.map(p=>p.range))*.2;
+      if(span>0&&change>margin){closing=change/span;tti=clamp(measuredRange/closing,0,120);}
+    }
+    sense.observed.set(alias,{id:alias,class:'OBSERVED MISSILE',source:maws?'MAWS':'VISUAL',priority:4,confidence:.8,bearing:b,rangeEstimate:measuredRange,rangeHistory:history,closingEstimate:closing,timeToImpactEstimate:tti,time,episode:previous?.episode??++sense.nextEpisode,expires:time+cfg.missileMemory,guidance:'UNKNOWN'});
   }
   for(const [id,o]of sense.observed)if(time>o.expires)sense.observed.delete(id);
 }
@@ -115,9 +126,9 @@ function trace(a,time,entries,event,extra={}){if(entries){entries.push({time,air
 
 export function transition(a,state,time,entries,reason){
   if(a.ai.state===state)return false;
-  if(a.ai.state==='ATTACK RUN'&&(state==='DEFENSIVE'||state==='MISSILE EVASION'))a.ai.failedRuns++;
+  if(a.ai.state==='ATTACK RUN'&&(state==='DEFENSIVE'||state==='MISSILE EVASION')){a.ai.failedRuns++;a.ai.dangerousApproaches.push({time,bearing:a.ai.primary?.bearing??bearing(a.angle),confidence:a.ai.primary?.confidence??.4});a.ai.dangerousApproaches=a.ai.dangerousApproaches.slice(-8);}
   a.ai.state=state;a.ai.stateSince=time;
-  if(state==='DISENGAGE'){a.retreat=true;a.ai.pending=null;}
+  if(state==='DISENGAGE'){a.retreat=true;}
   trace(a,time,entries,'STATE',{reason});return true;
 }
 
@@ -126,10 +137,11 @@ function defensiveManeuver(a,threats,time){
   // Bearing-only policy. For multiple threats, choose a circular mean heading
   // away from their weighted bearings; there is no access to true ranges.
   const incoming=threats.filter(t=>t.priority>=2);
-  let away=(primary.bearing-90)*Math.PI/180+Math.PI;
-  if(incoming.length>1){let x=0,y=0;for(const t of incoming){const b=(t.bearing-90)*Math.PI/180;x+=Math.cos(b)*t.priority;y+=Math.sin(b)*t.priority;}if(Math.hypot(x,y)>.05)away=Math.atan2(y,x)+Math.PI;}
-  const beam=(primary.bearing-90)*Math.PI/180+side*Math.PI/2;
-  const useBeam=a.rng()<a.cfg.skill*.45&&primary.class==='FIRE CONTROL';
+  const knownBearing=Number.isFinite(primary.bearing);
+  let away=knownBearing?(primary.bearing-90)*Math.PI/180+Math.PI:a.angle+side*rad(45+45*a.rng());
+  if(incoming.length>1&&incoming.every(t=>Number.isFinite(t.bearing))){let x=0,y=0;for(const t of incoming){const b=(t.bearing-90)*Math.PI/180;x+=Math.cos(b)*t.priority;y+=Math.sin(b)*t.priority;}if(Math.hypot(x,y)>.05)away=Math.atan2(y,x)+Math.PI;}
+  const beam=knownBearing?(primary.bearing-90)*Math.PI/180+side*Math.PI/2:away;
+  const useBeam=knownBearing&&a.cfg.notchSupported&&a.rng()<a.cfg.skill*.45&&primary.class==='FIRE CONTROL';
   a.ai.maneuver={kind:useBeam?'BEAM ATTEMPT':'SEPARATION TURN',angle:useBeam?beam:away+side*rad((1-a.cfg.skill)*20),altitude:Math.max(a.cfg.safeAltitude,a.z-(a.profile.maneuver>3?.8:.2)),heldUntil:time+Math.max(4,a.cfg.stateHold),side};
 }
 
@@ -137,20 +149,30 @@ export function decideAircraft(a,time,entries=null){
   if(!a.alive||a.exited)return;
   const ai=a.ai,cfg=a.cfg,threats=perceivedThreats(a),primary=threats[0]||null;
   ai.primary=primary;
-  if(a.health<cfg.abortHealth||a.health<20||ai.failedRuns>=cfg.failedApproaches||a.preset!=='WP-0'&&a.ordnance<=0){transition(a,'DISENGAGE',time,entries,'condition, weapons, or failed approaches');}
+  ai.dangerousApproaches=ai.dangerousApproaches.filter(p=>time-p.time<=cfg.routeMemory);
+  const energy=clamp(a.speed/Math.max(aircraftSpeedCap(a),.01),0,1);
+  ai.confidence=clamp(cfg.confidence*(a.health/100)*(.5+.5*energy),0,1);
+  ai.perceivedRisk=clamp((primary?primary.priority/4*primary.confidence:0)+ai.failedRuns*.1+ai.dangerousApproaches.length*.05,0,1);
+  const episodeKey=t=>t.id+':'+(t.episode??'current')+':'+t.priority;
+  const activeKeys=new Set(threats.map(episodeKey));
+  for(const key of ai.reactions.keys())if(!activeKeys.has(key))ai.reactions.delete(key);
+  if(ai.pending&&!activeKeys.has(ai.pending.key))ai.pending=null;
+  if(a.health<cfg.abortHealth||a.controlAuthority<.25||ai.failedRuns>=cfg.failedApproaches||a.preset!=='WP-0'&&a.ordnance<=0){transition(a,'DISENGAGE',time,entries,'condition, weapons, or failed approaches');}
   if(a.z<=cfg.safeAltitude+.01){ai.maneuver={kind:'TERRAIN AVOIDANCE',angle:a.angle,altitude:cfg.safeAltitude+.5,heldUntil:time+2};trace(a,time,entries,'TERRAIN');return;}
   if(primary){
     ai.clearSince=null;
     if(ai.riskSince===null)ai.riskSince=time;
     const urgency=primary.priority;
-    const pending=ai.pending;
-    // A new more urgent signal interrupts an older caution timer once.
-    if(!pending||urgency>pending.priority){
+    const key=episodeKey(primary);
+    let pending=ai.reactions.get(key);
+    if(!pending){
       const emergency=urgency>=3;
       const delay=emergency?cfg.emergencyMin+a.rng()*(cfg.emergencyMax-cfg.emergencyMin):cfg.reactionMin+a.rng()*(cfg.reactionMax-cfg.reactionMin);
-      ai.pending={id:primary.id,priority:urgency,ready:time+delay,acted:false};
+      pending={id:primary.id,key,priority:urgency,ready:time+delay,acted:false};
+      ai.reactions.set(key,pending);ai.pending=pending;
       trace(a,time,entries,'EVIDENCE',{evidence:threats.map(t=>({id:t.id,class:t.class,source:t.source,confidence:t.confidence}))});
     }
+    ai.pending=pending;
     if(time>=ai.pending.ready){
       const oldPriority=ai.state==='MISSILE EVASION'?3:ai.state==='DEFENSIVE'?2:ai.state==='CAUTIOUS'?1:0;
       const mayChange=time-ai.stateSince>=cfg.stateHold||urgency>oldPriority;
@@ -158,11 +180,11 @@ export function decideAircraft(a,time,entries=null){
       if(ai.state!=='DISENGAGE'&&mayChange){
         // High aggression can finish a briefly available release solution,
         // never grant immunity or ignore damage/flight constraints.
-        const finishing=ai.state==='ATTACK RUN'&&(urgency===1||urgency===2&&a.cfg.aggression>.7&&a.health>75);
+        const finishing=ai.state==='ATTACK RUN'&&(urgency===1||urgency===2&&cfg.aggression>.7&&a.health>75&&energy>.55&&releaseSolution(a)?.valid&&ai.perceivedRisk<=(cfg.riskTolerance+ai.confidence)/2);
         if(!finishing)transition(a,state,time,entries,'perceived '+primary.class);
       }
-      if(urgency>=2&&(ai.state!=='CAUTIOUS')&&(!ai.maneuver||time>=ai.maneuver.heldUntil))defensiveManeuver(a,threats,time);
-      if(urgency===1&&!ai.maneuver)ai.maneuver={kind:'CAUTIOUS OFFSET',angle:a.angle+(a.rng()<.5?-1:1)*rad(7),altitude:a.z,heldUntil:time+6};
+      if(urgency>=2&&ai.state!=='ATTACK RUN'&&(ai.state!=='CAUTIOUS')&&(!ai.maneuver||time>=ai.maneuver.heldUntil))defensiveManeuver(a,threats,time);
+      if(urgency===1&&!ai.maneuver){const side=a.rng()<.5?-1:1;ai.maneuver={kind:'CAUTIOUS OFFSET',side,angle:a.angle+side*rad(7),altitude:a.z,heldUntil:time+6};}
       ai.pending.acted=true;
     }
     if(primary.priority>=2&&time-ai.riskSince>cfg.riskAbortSeconds&&(cfg.aggression<.4||a.cm===0))transition(a,'DISENGAGE',time,entries,'accumulated mission risk');
@@ -171,11 +193,11 @@ export function decideAircraft(a,time,entries=null){
     if(ai.clearSince===null)ai.clearSince=time;
     if(ai.state!=='DISENGAGE'&&['CAUTIOUS','DEFENSIVE','MISSILE EVASION'].includes(ai.state)&&time-ai.clearSince>=cfg.safeClear&&time-ai.stateSince>=cfg.stateHold){transition(a,'REASSESS',time,entries,'warnings and observed missile memory cleared');ai.pending=null;ai.maneuver=null;}
     else if(ai.state==='REASSESS'&&time-ai.stateSince>=cfg.stateHold){transition(a,'MISSION APPROACH',time,entries,'retry eligible');ai.maneuver=null;}
-    if(ai.state==='MISSION APPROACH'&&a.preset==='WP-1'&&Math.hypot(a.x,a.y)<=cfg.attackEntry)transition(a,'ATTACK RUN',time,entries,'mission approach complete');
+    if(ai.state==='MISSION APPROACH'&&a.preset==='WP-1'&&!a.mission.reapproach&&energy>=cfg.attackEnergyMinimum&&distance(a,a.mission.objective)<=cfg.attackEntry)transition(a,'ATTACK RUN',time,entries,'mission approach complete');
   }
-  if(!a.retreat&&['MISSION APPROACH','CAUTIOUS'].includes(ai.state)&&a.preset==='WP-1'&&!a.mission.reapproach&&Math.hypot(a.x,a.y)<=cfg.attackEntry&&(!primary||primary.priority<2))transition(a,'ATTACK RUN',time,entries,'release approach despite manageable search evidence');
-  if(ai.state==='ATTACK RUN'&&Math.hypot(a.x,a.y)>8&&Math.abs(angleDelta(heading(a,a.mission.objective),a.angle))>rad(110)){
-    ai.failedRuns++;a.mission.reapproach={x:a.x+Math.cos(a.angle)*25,y:a.y+Math.sin(a.angle)*25,z:cfg.bombAltitude};transition(a,ai.failedRuns>=cfg.failedApproaches?'DISENGAGE':'REASSESS',time,entries,'missed release approach');
+  if(!a.retreat&&['MISSION APPROACH','CAUTIOUS'].includes(ai.state)&&a.preset==='WP-1'&&!a.mission.reapproach&&energy>=cfg.attackEnergyMinimum&&distance(a,a.mission.objective)<=cfg.attackEntry&&(!primary||primary.priority<2))transition(a,'ATTACK RUN',time,entries,'release approach despite manageable search evidence');
+  if(ai.state==='ATTACK RUN'&&distance(a,a.mission.objective)>8&&Math.abs(angleDelta(heading(a,a.mission.objective),a.angle))>rad(110)){
+    ai.failedRuns++;const side=ai.dangerousApproaches.length?(ai.dangerousApproaches.at(-1).bearing-bearing(a.angle)>0?-1:1):1;const retryAngle=a.angle+side*rad(12);a.mission.reapproach={x:a.x+Math.cos(retryAngle)*25,y:a.y+Math.sin(retryAngle)*25,z:cfg.bombAltitude};transition(a,ai.failedRuns>=cfg.failedApproaches?'DISENGAGE':'REASSESS',time,entries,'missed release approach');
   }
   trace(a,time,entries,'DECISION');
 }
@@ -183,9 +205,10 @@ export function decideAircraft(a,time,entries=null){
 export function deployCountermeasures(a,time,decoys,entries=null){
   const threat=a.ai.primary,cfg=a.cfg;
   if(!threat||threat.priority<3||time<a.cmReady||a.cm<=0||time<(a.ai.pending?.ready??Infinity))return false;
+  const reaction=a.ai.pending;if((reaction.bursts||0)>=cfg.cmMaxBurstsPerEpisode)return false;
   const reserve=Math.ceil(a.profile.countermeasures*cfg.cmReserve),emergency=threat.priority>=4||threat.class==='MISSILE SEEKER';
   if(!emergency&&a.cm-cfg.cmBurst<reserve)return false;
-  const count=Math.min(cfg.cmBurst,a.cm);a.cm-=count;a.cmReady=time+cfg.cmCooldown;
+  const count=Math.min(cfg.cmBurst,a.cm);reaction.bursts=(reaction.bursts||0)+1;a.cm-=count;a.cmReady=time+cfg.cmCooldown;
   decoys.push({id:'CM-'+a.id+'-'+time.toFixed(2),owner:a.id,x:a.x,y:a.y,z:a.z,born:time,expires:time+cfg.cmLifetime,radar:true,heat:true,angle:a.angle,alive:true});
   trace(a,time,entries,'COUNTERMEASURES',{spent:count});return true;
 }
@@ -197,7 +220,9 @@ export function releaseSolution(a){
   const point={x:a.x+Math.cos(a.angle)*a.speed*flightTime,y:a.y+Math.sin(a.angle)*a.speed*flightTime};
   const error=Math.hypot(point.x-a.mission.objective.x,point.y-a.mission.objective.y);
   const headingError=Math.abs(angleDelta(heading(a,a.mission.objective),a.angle));
-  return {flightTime,point,error,valid:error<=cfg.bombReleaseRadius&&headingError<=rad(cfg.bombHeadingTolerance)};
+  const envelope=h>=cfg.bombMinAltitude&&h<=cfg.bombMaxAltitude&&a.speed>=cfg.bombMinSpeed&&a.speed<=cfg.bombMaxGameplaySpeed;
+  const stable=a.actualG<=cfg.bombStableMaxG&&Math.abs(a.verticalSpeed)<=cfg.bombStableClimb&&a.releaseStableFor>=cfg.bombStableDwell;
+  return {flightTime,point,error,envelope,stable,valid:envelope&&stable&&error<=cfg.bombReleaseRadius&&headingError<=rad(cfg.bombHeadingTolerance)};
 }
 
 export function flyAircraft(a,time,dt){
@@ -205,7 +230,7 @@ export function flyAircraft(a,time,dt){
   let goal=a.retreat?a.mission.exit:a.mission.reapproach|| (a.preset==='WP-0'?a.mission.intrusion:a.mission.objective);
   if(!a.retreat&&a.mission.reapproach&&distance(a,goal)<2){a.mission.reapproach=null;transition(a,'MISSION APPROACH',time,null,'reapproach waypoint reached');goal=a.mission.objective;}
   if(a.preset==='WP-0'&&!a.retreat&&distance(a,goal)<cfg.intrusionWaypointRadius){transition(a,'DISENGAGE',time,null,'intrusion route complete');goal=a.mission.exit;}
-  let desired=heading(a,goal),altitude=a.retreat?Math.min(a.profile.ceiling/1000,10):a.preset==='WP-0'?a.z:cfg.bombAltitude;
+  let desired=heading(a,goal),altitude=a.retreat?Math.min(a.profile.ceiling/1000,a.mission.exit.z):a.preset==='WP-0'?goal.z:cfg.bombAltitude;
   if(ai.maneuver?.kind==='TERRAIN AVOIDANCE'&&time<ai.maneuver.heldUntil){desired=ai.maneuver.angle;altitude=ai.maneuver.altitude;}
   else if(ai.maneuver&&['DEFENSIVE','MISSILE EVASION','DISENGAGE'].includes(ai.state)&&ai.primary?.priority>=2){desired=ai.maneuver.angle;altitude=ai.maneuver.altitude;}
   else if(ai.state==='CAUTIOUS'&&ai.maneuver&&time<ai.maneuver.heldUntil)desired+=ai.maneuver.side?ai.maneuver.side*rad(7):rad(7);
@@ -222,8 +247,10 @@ export function flyAircraft(a,time,dt){
   a.speed=Math.max(cfg.minimumSpeed,a.speed>cap?Math.max(cap,a.speed-(cfg.deceleration+loss)*dt):Math.min(cap,a.speed+acceleration*dt-loss*dt));
   const climb=clamp(altitude-a.z,-cfg.climbRate*dt,cfg.climbRate*dt);
   a.verticalSpeed=climb/dt;a.z=clamp(a.z+climb,cfg.safeAltitude,a.profile.ceiling/1000);
+  const stablePath=a.actualG<=cfg.bombStableMaxG&&Math.abs(a.verticalSpeed)<=cfg.bombStableClimb&&Math.abs(angleDelta(heading(a,a.mission.objective),a.angle))<=rad(cfg.bombHeadingTolerance);
+  a.releaseStableFor=stablePath?a.releaseStableFor+dt:0;
   a.x+=Math.cos(a.angle)*a.speed*dt;a.y+=Math.sin(a.angle)*a.speed*dt;
-  if(a.retreat&&Math.hypot(a.x,a.y)>cfg.exitRadius){a.exited=true;a.alive=false;ai.state='EXITED';}
+  if(a.retreat&&(distance(a,a.mission.exit)<=cfg.exitWaypointRadius||Math.hypot(a.x,a.y)>cfg.exitRadius)){a.exited=true;a.alive=false;ai.state='EXITED';}
 }
 
 export class AircraftSystems {

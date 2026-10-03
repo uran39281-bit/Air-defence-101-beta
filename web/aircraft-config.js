@@ -38,21 +38,22 @@ export const RWR_PROFILES = Object.freeze({
   'RWR-T160':{...RWR_TIERS[2],id:'RWR-T160'}
 });
 export const AI_DEFAULTS = Object.freeze({
-  skill:.4, aggression:.55, reactionMin:2,reactionMax:4,
+  skill:.4, aggression:.55,confidence:.55,riskTolerance:.55,routeMemory:45, reactionMin:2,reactionMax:4,
   emergencyMin:1,emergencyMax:2,missileMemory:12,abortHealth:35,
   stateHold:2,safeClear:6,failedApproaches:2,decisionInterval:.25,
   sensorInterval:.2,visualRange:8,visualFov:130,visualVertical:110,
-  visualAcquire:1.2,visualWeather:.85,nightPenalty:1,maws:false,
-  cmBurst:3,cmCooldown:1.5,cmLifetime:3,cmReserve:.1,
+  visualAcquire:1.2,ttiObservationWindow:1,visualWeather:.85,nightPenalty:1,maws:false,
+  cmBurst:3,cmMaxBurstsPerEpisode:4,cmCooldown:1.5,cmLifetime:3,cmReserve:.1,
   decoyResistance:.78,decoyAcquire:.25,decoyUpdate:.25,
   initialCruise:.8,acceleration:.006,deceleration:.012,turnEnergyLoss:.0014,
   minimumSpeed:.09,safeAltitude:.6,climbRate:.035,
-  riskAbortSeconds:32,emissionBand:'I',searchStrength:8,
+  attackEnergyMinimum:.45,riskAbortSeconds:32,emissionBand:'I',searchStrength:8,
   fireControlStrength:6,seekerStrength:2,searchBeam:14,
   fireControlBeam:12,bombAltitude:2.5,attackEntry:18,
   exitRadius:600,intrusionWaypointRadius:8,
   bombGravity:.00981,bombReleaseRadius:.65,bombHeadingTolerance:8,
-  bombHitRadius:.42,bombReleaseCooldown:.65,bombDamageHits:1,
+  bombHitRadius:.42,bombReleaseCooldown:.65,bombStableDwell:.5,bombStableMaxG:1.3,
+  bombStableClimb:.015,bombMinAltitude:.6,bombMaxAltitude:12,bombMinSpeed:.1,bombMaxGameplaySpeed:.8,exitWaypointRadius:8,bombDamageHits:1,
   bombExplosive:250,bombDefinition:'BETA-BOMB-250',bombSalvo:1,
   terrainHeight:0,notchSupported:false,notchQuality:.75,
   heatReduction:.65,heatEnergyPenalty:.2

@@ -123,11 +123,11 @@ test('bombs release from valid trajectory, remain airborne after carrier destruc
   const s=sim(),a=s.spawn();s.radar=false;a.rwr={...RWR_TIERS[0]};a.cfg.visualRange=0;
   Object.assign(a,{x:0,y:-5,z:2.5,speed:.2,angle:Math.PI/2,verticalSpeed:0});
   const t=Math.sqrt(2*a.z/AI_DEFAULTS.bombGravity);a.y=-a.speed*t;transition(a,'ATTACK RUN',0);a.ai.nextDecision=100;
-  assert.ok(releaseSolution(a).valid);s.step(.05);assert.equal(s.aviation.bombs.length,1);assert.equal(s.hits,0);assert.equal(a.ordnance,3);
+  a.releaseStableFor=a.cfg.bombStableDwell;assert.ok(releaseSolution(a).valid);s.step(.05);assert.equal(s.aviation.bombs.length,1);assert.equal(s.hits,0);assert.equal(a.ordnance,3);
   a.alive=false;a.ai.state='DESTROYED';s.step(t-1);assert.equal(s.hits,0);s.step(2);assert.equal(s.hits,1);assert.equal(s.aviation.bombs.length,0);
 });
 test('search caution permits a close mission release; no instant battery hit on overflight',()=>{
-  const s=sim(),a=s.spawn();Object.assign(a,{x:0,y:-4,z:2.5,speed:.18,angle:Math.PI/2});warn(a,'SEARCH');decideAircraft(a,.71);decideAircraft(a,5);
+  const s=sim(),a=s.spawn();Object.assign(a,{x:0,y:-4,z:2.5,speed:.24,angle:Math.PI/2});warn(a,'SEARCH');decideAircraft(a,.71);decideAircraft(a,5);
   assert.equal(a.ai.state,'ATTACK RUN');s.radar=false;s.step(.1);assert.equal(s.hits,0);
 });
 test('traces are development-only and all sensing, reactions, flight and decoys use simulation time',()=>{
