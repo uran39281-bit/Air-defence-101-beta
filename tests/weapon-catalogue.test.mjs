@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import {FIELD_STATUS, RUSSIAN_WEAPON_CATALOGUE, WEAPON_VARIANT_NOTES, findWeapon} from '../web/weapon-catalogue.js';
 import {WEAPON_PRESETS, AI_DEFAULTS} from '../web/aircraft-config.js';
 
-test('catalogue retains specific variants and never enables new gameplay presets', () => {
+test('catalogue retains reference variants while explicit missile gameplay presets are enabled', () => {
   assert.equal(RUSSIAN_WEAPON_CATALOGUE.length, 25);
   assert.equal(new Set(RUSSIAN_WEAPON_CATALOGUE.map(w => w.id)).size, 25);
   assert.equal(RUSSIAN_WEAPON_CATALOGUE.filter(w => w.role === 'AIR_TO_AIR').length, 6);
   assert.equal(RUSSIAN_WEAPON_CATALOGUE.filter(w => w.category === 'UNGUIDED_BOMB').length, 7);
   assert.ok(RUSSIAN_WEAPON_CATALOGUE.every(w => w.referenceOnly && !w.gameplayEnabled));
   assert.equal(WEAPON_PRESETS['WP-2'].enabled, false);
-  assert.equal(WEAPON_PRESETS['WP-3'].enabled, false);
+  assert.equal(WEAPON_PRESETS['WP-3'].enabled, true);
   assert.equal(WEAPON_PRESETS['WP-1'].weapon, 'BETA-BOMB-250');
   assert.equal(AI_DEFAULTS.bombDefinition, 'BETA-BOMB-250');
   for (const ambiguous of ['FAB-500M', 'FAB-3000M', 'R-27', 'Kh-58U', 'KH-58SHK']) assert.equal(findWeapon(ambiguous), null);

@@ -1,4 +1,4 @@
-import {AIRCRAFT,RWR_PROFILES,AI_DEFAULTS} from './aircraft-config.js';
+import {AIRCRAFT,RWR_PROFILES,AI_DEFAULTS,MISSION_TACTICS} from './aircraft-config.js';
 
 export const clamp=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
 export const angleDelta=(a,b)=>Math.atan2(Math.sin(a-b),Math.cos(a-b));
@@ -8,24 +8,76 @@ const heading=(a,b)=>Math.atan2(b.y-a.y,b.x-a.x);
 const bearing=angle=>(angle*180/Math.PI+90+360)%360;
 export function seeded(seed){return ()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};}
 
+const MISSILE_STANDOFF={KH31PD:110,KH38MT:50,KH29TD:25};
+function planRoute(position,mission,preset,cfg,rng){
+  if(!cfg.routeVariation)return;
+  // Adjacent small seeds share the first LCG bucket; warm the stream before
+  // sampling a tactic so newly numbered spawns still choose different plans.
+  rng();rng();
+  const choices=Object.entries(MISSION_TACTICS).filter(([,p])=>p.preset===preset);
+  const selected=cfg.missionProfile?choices.find(([name])=>name===cfg.missionProfile):choices[Math.floor(rng()*choices.length)];
+  if(!selected)throw Error('Unsupported mission profile '+cfg.missionProfile);
+  const [name,tactic]=selected,side=rng()<.5?-1:1;
+  const originAngle=heading(mission.objective,position),offset=rad(tactic.offsetMin+rng()*(tactic.offsetMax-tactic.offsetMin))*side;
+  const approachAngle=originAngle+offset,radius=Math.hypot(position.x-mission.objective.x,position.y-mission.objective.y);
+  const altitude=clamp(tactic.altitude??position.z,cfg.safeAltitude,cfg.ceiling);
+  const point=(angle,range,z=altitude)=>({x:mission.objective.x+Math.cos(angle)*range,y:mission.objective.y+Math.sin(angle)*range,z});
+  mission.profile=name;mission.side=side;mission.approachAngle=approachAngle;mission.approachAltitude=altitude;
+  mission.cruise=tactic.cruise;mission.routeIndex=0;mission.routeOrigin={...position};
+  mission.salvoLimit=cfg.missileSalvoLimit??tactic.salvo??1;
+  if(preset==='WP-0'){
+    const crossing=point(originAngle+Math.PI+offset,Math.min(radius*.5,100),position.z);
+    mission.intrusion=crossing;mission.route=[point(originAngle+offset*.5,radius*.65,position.z)];
+  }else if(preset==='WP-3'){
+    const standoff=cfg.standoffRange??MISSILE_STANDOFF[cfg.missileWeaponID]??50;
+    mission.standoffRange=standoff;mission.attackPoint=point(approachAngle,standoff);
+    // A far ingress leg creates distinct approach bearings. Near spawns skip it
+    // so their finite turn radius cannot trap them behind an obsolete waypoint.
+    mission.route=radius>standoff+45?[point(originAngle+offset*.5,Math.max(standoff+25,radius*.68))]:[];
+  }else{
+    const gate=Math.min(45,Math.max(cfg.attackEntry+12,radius*.45));
+    mission.route=radius>gate+20?[point(originAngle+offset*.5,radius*.68),point(approachAngle,gate)]:[];
+    mission.attackPoint=point(approachAngle,gate);
+  }
+  // Leave on a seeded side after attacking instead of crossing the battery.
+  mission.exit=point(approachAngle+side*rad(55),cfg.exitRadius,Math.min(10,cfg.ceiling));
+}
+
 export function createAircraft(type,id,position,settings={},seed=1){
   const profile=AIRCRAFT[type];
   if(!profile)throw Error('Unsupported aircraft '+type);
   const cfg={...AI_DEFAULTS,...settings};
   const rng=seeded(seed);
   const exitAngle=heading({x:0,y:0},position)+Math.PI;
-  const mission={objective:{x:0,y:0,z:0},exit:{x:Math.cos(exitAngle)*cfg.exitRadius,y:Math.sin(exitAngle)*cfg.exitRadius,z:10},intrusion:{x:-position.x*.5,y:-position.y*.5,z:position.z},task:(settings.preset||profile.presets[0])==='WP-0'?'INTRUSION / DIVERSION':'BOMB STRIKE',...settings.mission};
+  const preset=settings.preset||profile.presets[0];
+  const missileWeaponID=settings.missileWeaponID||profile.missileWeaponID||null;
+  const mission={objective:{x:0,y:0,z:0},exit:{x:Math.cos(exitAngle)*cfg.exitRadius,y:Math.sin(exitAngle)*cfg.exitRadius,z:10},intrusion:{x:-position.x*.5,y:-position.y*.5,z:position.z},task:preset==='WP-0'?'INTRUSION / DIVERSION':preset==='WP-3'?'STANDOFF MISSILE STRIKE':'BOMB STRIKE',startedAt:null,...settings.mission};
+  planRoute(position,mission,preset,{...cfg,missileWeaponID,ceiling:profile.ceiling/1000},rng);
+  // Explicit assigned waypoints win over generated defaults.
+  Object.assign(mission,settings.mission);
+  if(preset==='WP-3'&&!mission.attackPoint){
+    mission.standoffRange=cfg.standoffRange??MISSILE_STANDOFF[missileWeaponID]??50;
+    const approach=heading(mission.objective,position);
+    mission.attackPoint={x:mission.objective.x+Math.cos(approach)*mission.standoffRange,y:mission.objective.y+Math.sin(approach)*mission.standoffRange,z:Math.min(6,profile.ceiling/1000)};
+    mission.approachAngle=approach;mission.approachAltitude=mission.attackPoint.z;
+  }
   for(const point of ['objective','exit','intrusion']){if(!Number.isFinite(mission[point]?.x)||!Number.isFinite(mission[point]?.y)||!Number.isFinite(mission[point]?.z))throw Error('Invalid mission '+point+' waypoint');if(point!=='objective'&&(mission[point].z<cfg.safeAltitude||mission[point].z>profile.ceiling/1000))throw Error('Unreachable mission '+point+' altitude');}
-  const a={id,type,profile,allegiance:'HOSTILE',...position,angle:heading(position,mission.objective),
+  for(const point of [...(mission.route||[]),...(mission.attackPoint?[mission.attackPoint]:[])])if(!['x','y','z'].every(k=>Number.isFinite(point?.[k]))||point.z<cfg.safeAltitude||point.z>profile.ceiling/1000)throw Error('Invalid or unreachable mission route waypoint');
+  const insideStandoff=preset==='WP-3'&&Math.hypot(position.x-mission.objective.x,position.y-mission.objective.y)<=mission.standoffRange;
+  const initialGoal=mission.route?.[0]||(insideStandoff?mission.objective:mission.attackPoint)||(preset==='WP-0'?mission.intrusion:mission.objective);
+  const a={id,type,profile,allegiance:'HOSTILE',...position,angle:heading(position,initialGoal),
     speed:0,health:100,controlAuthority:settings.controlAuthority??1,alive:true,retreat:false,exited:false,actualG:1,maxCommandedG:profile.commandedG,
     verticalSpeed:0,releaseStableFor:0,heat:1,signature:profile.signature,stealth:profile.stealth,
-    preset:settings.preset||profile.presets[0],ordnance:settings.preset==='WP-0'?0:profile.bombs,cm:profile.countermeasures,cmReady:0,bombReady:0,
+    preset,ordnance:preset==='WP-1'?profile.bombs:0,cm:profile.countermeasures,cmReady:0,bombReady:0,
+    missilesRemaining:preset==='WP-3'?(settings.missilesRemaining??profile.missiles??0):0,missileWeaponID,
+    missileReady:0,missileStableFor:0,missileAttackAuthorized:false,missilesFired:0,
+    missileSalvoLimit:mission.salvoLimit??cfg.missileSalvoLimit??1,
     rwr:{...RWR_PROFILES[profile.rwr],...settings.rwr},maws:cfg.maws,mission,rng,
     perception:{warnings:new Map(),pending:new Map(),observed:new Map(),visualDwell:new Map(),emitterAliases:new Map(),visualAliases:new Map(),nextEmitter:0,nextVisual:0,nextEpisode:0},
     ai:{state:'MISSION APPROACH',stateSince:0,nextDecision:0,pending:null,clearSince:null,
       failedRuns:0,wasAttacking:false,primary:null,maneuver:null,riskSince:null,reactions:new Map(),dangerousApproaches:[],confidence:cfg.confidence,perceivedRisk:0},cfg};
   if(!profile.presets.includes(a.preset))throw Error('Unsupported weapon preset '+a.preset+' for '+type);
-  a.speed=aircraftSpeedCap(a)*cfg.initialCruise;
+  a.speed=aircraftSpeedCap(a)*(mission.cruise??cfg.initialCruise);
   return a;
 }
 
@@ -33,7 +85,8 @@ export function aircraftSpeedCap(a){
   const p=a.profile,altitude=Math.min(a.z*1000,p.referenceAltitude);
   const base=(p.lowSpeed+(p.maxSpeed-p.lowSpeed)*clamp(altitude/p.referenceAltitude,0,1))/3600;
   const healthFactor=.5+.5*clamp(a.health/100,0,1);
-  const loadFactor=1-.08*(a.profile.bombs?a.ordnance/a.profile.bombs:0);
+  const loadRatio=a.preset==='WP-3'?(a.profile.missiles?a.missilesRemaining/a.profile.missiles:0):(a.profile.bombs?a.ordnance/a.profile.bombs:0);
+  const loadFactor=1-.08*clamp(loadRatio,0,1);
   return base*healthFactor*loadFactor;
 }
 
@@ -126,10 +179,31 @@ function trace(a,time,entries,event,extra={}){if(entries){entries.push({time,air
 
 export function transition(a,state,time,entries,reason){
   if(a.ai.state===state)return false;
-  if(a.ai.state==='ATTACK RUN'&&(state==='DEFENSIVE'||state==='MISSILE EVASION')){a.ai.failedRuns++;a.ai.dangerousApproaches.push({time,bearing:a.ai.primary?.bearing??bearing(a.angle),confidence:a.ai.primary?.confidence??.4});a.ai.dangerousApproaches=a.ai.dangerousApproaches.slice(-8);}
+  const enteringDefense=state==='DEFENSIVE'||state==='MISSILE EVASION';
+  if(enteringDefense&&['MISSION APPROACH','CAUTIOUS','ATTACK RUN','LAUNCH WINDOW'].includes(a.ai.state)){
+    if(['ATTACK RUN','LAUNCH WINDOW'].includes(a.ai.state))a.ai.failedRuns++;
+    a.ai.dangerousApproaches.push({time,bearing:a.ai.primary?.bearing??null,routeAngle:a.mission.approachAngle??heading(a.mission.objective,a),confidence:a.ai.primary?.confidence??.4});
+    a.ai.dangerousApproaches=a.ai.dangerousApproaches.slice(-8);a.mission.windowStartedAt=null;
+  }
   a.ai.state=state;a.ai.stateSince=time;
   if(state==='DISENGAGE'){a.retreat=true;}
   trace(a,time,entries,'STATE',{reason});return true;
+}
+
+function replanRememberedApproach(a,time,entries){
+  const memory=a.ai.dangerousApproaches.at(-1);
+  if(!memory||a.preset==='WP-0'||a.retreat)return;
+  // Only the assigned objective, own route and a received warning are used.
+  // A warning gives a noisy direction; it never grants emitter coordinates.
+  const prior=a.mission.approachAngle??memory.routeAngle;
+  const warningAngle=Number.isFinite(memory.bearing)?rad(memory.bearing-90):null;
+  const side=warningAngle===null?-(a.mission.side||1):angleDelta(warningAngle,a.angle)>0?-1:1;
+  const angle=prior+side*rad(a.cfg.missileRepositionDegrees+a.rng()*10);
+  const range=a.preset==='WP-3'?a.mission.standoffRange:Math.max(35,a.cfg.attackEntry+16);
+  const point={x:a.mission.objective.x+Math.cos(angle)*range,y:a.mission.objective.y+Math.sin(angle)*range,z:a.mission.approachAltitude??a.cfg.bombAltitude};
+  a.mission.side=side;a.mission.approachAngle=angle;a.mission.route=[];a.mission.routeIndex=0;
+  a.mission.reapproach=point;a.mission.attackPoint={...point};a.mission.windowStartedAt=null;
+  trace(a,time,entries,'REPLAN',{reason:'remembered warning sector',confidence:memory.confidence});
 }
 
 function defensiveManeuver(a,threats,time){
@@ -148,6 +222,8 @@ function defensiveManeuver(a,threats,time){
 export function decideAircraft(a,time,entries=null){
   if(!a.alive||a.exited)return;
   const ai=a.ai,cfg=a.cfg,threats=perceivedThreats(a),primary=threats[0]||null;
+  a.missileAttackAuthorized=false;
+  if(a.mission.startedAt===null)a.mission.startedAt=time;
   ai.primary=primary;
   ai.dangerousApproaches=ai.dangerousApproaches.filter(p=>time-p.time<=cfg.routeMemory);
   const energy=clamp(a.speed/Math.max(aircraftSpeedCap(a),.01),0,1);
@@ -157,10 +233,17 @@ export function decideAircraft(a,time,entries=null){
   const activeKeys=new Set(threats.map(episodeKey));
   for(const key of ai.reactions.keys())if(!activeKeys.has(key))ai.reactions.delete(key);
   if(ai.pending&&!activeKeys.has(ai.pending.key))ai.pending=null;
-  if(a.health<cfg.abortHealth||a.controlAuthority<.25||ai.failedRuns>=cfg.failedApproaches||a.preset!=='WP-0'&&a.ordnance<=0){transition(a,'DISENGAGE',time,entries,'condition, weapons, or failed approaches');}
+  const exhausted=a.preset==='WP-1'?a.ordnance<=0:a.preset==='WP-3'?a.missilesRemaining<=0:false;
+  if(a.health<cfg.abortHealth||a.controlAuthority<.25||ai.failedRuns>=cfg.failedApproaches||exhausted||time-a.mission.startedAt>=cfg.missionMaxSeconds){transition(a,'DISENGAGE',time,entries,'condition, weapons, failed approaches, or mission time limit');}
   if(a.z<=cfg.safeAltitude+.01){ai.maneuver={kind:'TERRAIN AVOIDANCE',angle:a.angle,altitude:cfg.safeAltitude+.5,heldUntil:time+2};trace(a,time,entries,'TERRAIN');return;}
+  const backgroundRecovery=primary?.priority<2&&['DEFENSIVE','MISSILE EVASION','REASSESS'].includes(ai.state);
+  if(backgroundRecovery){
+    ai.clearSince??=time;
+    if(ai.state!=='REASSESS'&&time-ai.clearSince>=cfg.safeClear&&time-ai.stateSince>=cfg.stateHold){transition(a,'REASSESS',time,entries,'acute warning cleared; search remains');ai.maneuver=null;}
+    else if(ai.state==='REASSESS'&&time-ai.stateSince>=cfg.stateHold){replanRememberedApproach(a,time,entries);transition(a,'MISSION APPROACH',time,entries,'retry eligible despite background search');ai.maneuver=null;}
+  }
   if(primary){
-    ai.clearSince=null;
+    if(!backgroundRecovery)ai.clearSince=null;
     if(ai.riskSince===null)ai.riskSince=time;
     const urgency=primary.priority;
     const key=episodeKey(primary);
@@ -177,10 +260,11 @@ export function decideAircraft(a,time,entries=null){
       const oldPriority=ai.state==='MISSILE EVASION'?3:ai.state==='DEFENSIVE'?2:ai.state==='CAUTIOUS'?1:0;
       const mayChange=time-ai.stateSince>=cfg.stateHold||urgency>oldPriority;
       const state=urgency>=3?'MISSILE EVASION':urgency===2?'DEFENSIVE':'CAUTIOUS';
-      if(ai.state!=='DISENGAGE'&&mayChange){
+      const recovering=urgency<2&&['DEFENSIVE','MISSILE EVASION','REASSESS'].includes(ai.state);
+      if(ai.state!=='DISENGAGE'&&mayChange&&!recovering){
         // High aggression can finish a briefly available release solution,
         // never grant immunity or ignore damage/flight constraints.
-        const finishing=ai.state==='ATTACK RUN'&&(urgency===1||urgency===2&&cfg.aggression>.7&&a.health>75&&energy>.55&&releaseSolution(a)?.valid&&ai.perceivedRisk<=(cfg.riskTolerance+ai.confidence)/2);
+        const finishing=ai.state==='LAUNCH WINDOW'&&urgency===1||ai.state==='ATTACK RUN'&&(urgency===1||urgency===2&&cfg.aggression>.7&&a.health>75&&energy>.55&&releaseSolution(a)?.valid&&ai.perceivedRisk<=(cfg.riskTolerance+ai.confidence)/2);
         if(!finishing)transition(a,state,time,entries,'perceived '+primary.class);
       }
       if(urgency>=2&&ai.state!=='ATTACK RUN'&&(ai.state!=='CAUTIOUS')&&(!ai.maneuver||time>=ai.maneuver.heldUntil))defensiveManeuver(a,threats,time);
@@ -192,12 +276,31 @@ export function decideAircraft(a,time,entries=null){
     ai.riskSince=null;
     if(ai.clearSince===null)ai.clearSince=time;
     if(ai.state!=='DISENGAGE'&&['CAUTIOUS','DEFENSIVE','MISSILE EVASION'].includes(ai.state)&&time-ai.clearSince>=cfg.safeClear&&time-ai.stateSince>=cfg.stateHold){transition(a,'REASSESS',time,entries,'warnings and observed missile memory cleared');ai.pending=null;ai.maneuver=null;}
-    else if(ai.state==='REASSESS'&&time-ai.stateSince>=cfg.stateHold){transition(a,'MISSION APPROACH',time,entries,'retry eligible');ai.maneuver=null;}
+    else if(ai.state==='REASSESS'&&time-ai.stateSince>=cfg.stateHold){replanRememberedApproach(a,time,entries);transition(a,'MISSION APPROACH',time,entries,'retry eligible');ai.maneuver=null;}
     if(ai.state==='MISSION APPROACH'&&a.preset==='WP-1'&&!a.mission.reapproach&&energy>=cfg.attackEnergyMinimum&&distance(a,a.mission.objective)<=cfg.attackEntry)transition(a,'ATTACK RUN',time,entries,'mission approach complete');
   }
   if(!a.retreat&&['MISSION APPROACH','CAUTIOUS'].includes(ai.state)&&a.preset==='WP-1'&&!a.mission.reapproach&&energy>=cfg.attackEnergyMinimum&&distance(a,a.mission.objective)<=cfg.attackEntry&&(!primary||primary.priority<2))transition(a,'ATTACK RUN',time,entries,'release approach despite manageable search evidence');
   if(ai.state==='ATTACK RUN'&&distance(a,a.mission.objective)>8&&Math.abs(angleDelta(heading(a,a.mission.objective),a.angle))>rad(110)){
     ai.failedRuns++;const side=ai.dangerousApproaches.length?(ai.dangerousApproaches.at(-1).bearing-bearing(a.angle)>0?-1:1):1;const retryAngle=a.angle+side*rad(12);a.mission.reapproach={x:a.x+Math.cos(retryAngle)*25,y:a.y+Math.sin(retryAngle)*25,z:cfg.bombAltitude};transition(a,ai.failedRuns>=cfg.failedApproaches?'DISENGAGE':'REASSESS',time,entries,'missed release approach');
+  }
+  if(a.preset==='WP-3'&&!a.retreat){
+    const mission=a.mission,routeComplete=(mission.routeIndex||0)>=(mission.route?.length||0);
+    const allowedState=['MISSION APPROACH','CAUTIOUS','LAUNCH WINDOW'].includes(ai.state);
+    const actionable=primary&&primary.priority>=2&&ai.pending?.acted;
+    const radius=Math.hypot(a.x-mission.objective.x,a.y-mission.objective.y);
+    const nearWindow=distance(a,mission.attackPoint)<=cfg.routeWaypointRadius+a.speed*cfg.routeLookaheadSeconds||radius<=mission.standoffRange*1.08;
+    if(allowedState&&!actionable&&!mission.reapproach&&routeComplete&&nearWindow&&energy>=cfg.missileLaunchEnergy){
+      transition(a,'LAUNCH WINDOW',time,entries,'standoff launch position reached');
+      mission.windowStartedAt??=time;
+      a.missileAttackAuthorized=true;
+      const tooClose=radius<(mission.weaponEnvelope?.minRange??3)+4;
+      if(tooClose||time-mission.windowStartedAt>cfg.missileWindowSeconds){
+        a.missileAttackAuthorized=false;ai.failedRuns++;mission.windowStartedAt=null;
+        const angle=heading(mission.objective,a)+(mission.side||1)*rad(cfg.missileRepositionDegrees);
+        mission.reapproach={x:mission.objective.x+Math.cos(angle)*mission.standoffRange,y:mission.objective.y+Math.sin(angle)*mission.standoffRange,z:mission.approachAltitude};
+        transition(a,ai.failedRuns>=cfg.failedApproaches?'DISENGAGE':'REASSESS',time,entries,'launch window unavailable; reposition or abort');
+      }
+    }
   }
   trace(a,time,entries,'DECISION');
 }
@@ -226,15 +329,29 @@ export function releaseSolution(a){
 }
 
 export function flyAircraft(a,time,dt){
+  if(!Number.isFinite(dt)||dt<=0)return;
   const cfg=a.cfg,ai=a.ai;
-  let goal=a.retreat?a.mission.exit:a.mission.reapproach|| (a.preset==='WP-0'?a.mission.intrusion:a.mission.objective);
-  if(!a.retreat&&a.mission.reapproach&&distance(a,goal)<2){a.mission.reapproach=null;transition(a,'MISSION APPROACH',time,null,'reapproach waypoint reached');goal=a.mission.objective;}
+  const mission=a.mission,waypointRadius=cfg.routeWaypointRadius+a.speed*cfg.routeLookaheadSeconds;
+  if(!a.retreat&&!mission.reapproach&&ai.state!=='ATTACK RUN'){
+    const route=mission.route||[];
+    while((mission.routeIndex||0)<route.length){
+      const index=mission.routeIndex||0,point=route[index],previous=index?route[index-1]:mission.routeOrigin||point;
+      const legX=point.x-previous.x,legY=point.y-previous.y;
+      const passed=(a.x-point.x)*legX+(a.y-point.y)*legY>0;
+      if(Math.hypot(a.x-point.x,a.y-point.y)>waypointRadius&&!passed)break;
+      mission.routeIndex=index+1;
+    }
+  }
+  const nextGoal=()=>ai.state==='ATTACK RUN'||a.preset==='WP-3'&&ai.state==='LAUNCH WINDOW'?mission.objective:mission.route?.[mission.routeIndex||0]||(a.preset==='WP-0'?mission.intrusion:a.preset==='WP-3'?mission.attackPoint:mission.objective);
+  let goal=a.retreat?mission.exit:mission.reapproach||nextGoal();
+  if(!a.retreat&&mission.reapproach&&distance(a,goal)<waypointRadius){mission.reapproach=null;transition(a,'MISSION APPROACH',time,null,'reapproach waypoint reached');goal=nextGoal();}
   if(a.preset==='WP-0'&&!a.retreat&&distance(a,goal)<cfg.intrusionWaypointRadius){transition(a,'DISENGAGE',time,null,'intrusion route complete');goal=a.mission.exit;}
-  let desired=heading(a,goal),altitude=a.retreat?Math.min(a.profile.ceiling/1000,a.mission.exit.z):a.preset==='WP-0'?goal.z:cfg.bombAltitude;
+  let desired=heading(a,goal),altitude=a.retreat?Math.min(a.profile.ceiling/1000,mission.exit.z):a.preset==='WP-0'?goal.z:mission.approachAltitude??cfg.bombAltitude;
   if(ai.maneuver?.kind==='TERRAIN AVOIDANCE'&&time<ai.maneuver.heldUntil){desired=ai.maneuver.angle;altitude=ai.maneuver.altitude;}
-  else if(ai.maneuver&&['DEFENSIVE','MISSILE EVASION','DISENGAGE'].includes(ai.state)&&ai.primary?.priority>=2){desired=ai.maneuver.angle;altitude=ai.maneuver.altitude;}
+  else if(ai.maneuver&&(['DEFENSIVE','MISSILE EVASION'].includes(ai.state)||ai.state==='DISENGAGE'&&ai.primary?.priority>=2)){desired=ai.maneuver.angle;altitude=ai.maneuver.altitude;}
   else if(ai.state==='CAUTIOUS'&&ai.maneuver&&time<ai.maneuver.heldUntil)desired+=ai.maneuver.side?ai.maneuver.side*rad(7):rad(7);
-  const cap=aircraftSpeedCap(a),g=achievableG(a),v=Math.max(a.speed,cfg.minimumSpeed);
+  const speedCap=aircraftSpeedCap(a),defending=['DEFENSIVE','MISSILE EVASION','DISENGAGE'].includes(ai.state);
+  const cap=speedCap*(defending?1:mission.cruise??1),g=achievableG(a),v=Math.max(a.speed,cfg.minimumSpeed);
   const structuralTurn=.00981*Math.sqrt(Math.max(0,g*g-1))/v;
   const handling=clamp(.35+a.profile.maneuver*.065,.4,1);
   const turn=clamp(angleDelta(desired,a.angle),-structuralTurn*handling*dt,structuralTurn*handling*dt);
@@ -255,7 +372,7 @@ export function flyAircraft(a,time,dt){
 
 export class AircraftSystems {
   constructor(sim,settings={}){this.sim=sim;this.cfg={...AI_DEFAULTS,...settings};this.nextSensor=0;this.trace=settings.trace?[]:null;this.decoys=[];this.bombs=[];this.bombSerial=0;this.lineOfSight=settings.lineOfSight||(()=>true);}
-  create(type,id,position){const overrides={...this.cfg,aggression:AIRCRAFT[type].aggression,...this.cfg.aircraftOverrides?.[type]};return createAircraft(type,id,position,overrides,this.sim.cfg.seed+this.sim.serial*7919);}
+  create(type,id,position,settings={}){const overrides={...this.cfg,aggression:AIRCRAFT[type].aggression,...this.cfg.aircraftOverrides?.[type],...settings};return createAircraft(type,id,position,overrides,this.sim.cfg.seed+this.sim.serial*7919);}
   emissions(){
     const s=this.sim,cfg=this.cfg,output=[];
     if(s.radar){output.push({key:'battery-search',x:0,y:0,z:0,angle:s.phase-Math.PI/2,beam:cfg.searchBeam,band:cfg.emissionBand,waveform:'SEARCH',family:'BETA_SEARCH',strength:cfg.searchStrength});
@@ -270,9 +387,28 @@ export class AircraftSystems {
     if(time>=this.nextSensor){this.sense(time,this.cfg.sensorInterval);this.nextSensor=time+this.cfg.sensorInterval;}
     for(const a of s.aircraft){
       if(!a.alive)continue;
+      if(a.preset==='WP-3'&&s.hostileWeapons?.profile){
+        const envelope=s.hostileWeapons.profile(a);
+        if(envelope){
+          if(Number.isFinite(envelope.standoffRange)&&envelope.standoffRange!==a.mission.standoffRange){
+            a.mission.standoffRange=envelope.standoffRange;
+            const approach=a.mission.approachAngle??heading(a.mission.objective,a);
+            a.mission.attackPoint={x:a.mission.objective.x+Math.cos(approach)*envelope.standoffRange,y:a.mission.objective.y+Math.sin(approach)*envelope.standoffRange,z:a.mission.approachAltitude};
+          }
+          a.mission.weaponEnvelope=envelope;
+        }
+      }
       if(time>=a.ai.nextDecision){decideAircraft(a,time,this.trace);a.ai.nextDecision=time+this.cfg.decisionInterval;deployCountermeasures(a,time,this.decoys,this.trace);}
       flyAircraft(a,time,dt);
       if(!a.alive){s.removeContact(a.id);continue;}
+      if(a.preset==='WP-3'&&a.missileAttackAuthorized&&s.hostileWeapons?.canLaunch(a)){
+        const missile=s.hostileWeapons.launch(a);
+        if(missile){
+          a.missilesFired++;a.mission.lastLaunchAt=time;
+          trace(a,time,this.trace,'HOSTILE LAUNCH',{weapon:a.missileWeaponID,missile:missile.id});
+          if(a.missilesFired>=a.missileSalvoLimit||a.missilesRemaining<=0){a.missileAttackAuthorized=false;transition(a,'DISENGAGE',time,this.trace,'planned missile salvo complete');}
+        }
+      }
       if(a.ai.state==='ATTACK RUN'&&a.preset==='WP-1'&&a.ordnance>0&&time>=a.bombReady){const solution=releaseSolution(a);if(solution?.valid){const number=Math.min(a.cfg.bombSalvo,a.ordnance);for(let n=0;n<number;n++)this.bombs.push({id:'B'+(++this.bombSerial),owner:a.id,definition:this.cfg.bombDefinition,x:a.x,y:a.y,z:a.z,vx:Math.cos(a.angle)*a.speed,vy:Math.sin(a.angle)*a.speed,vz:a.verticalSpeed,alive:true,explosive:this.cfg.bombExplosive});a.ordnance-=number;a.bombReady=time+a.cfg.bombReleaseCooldown;const contact=s.contacts.get(a.id);if(contact?.tracked)s.addLog(a.id+' observed weapon release');}}
     }
     for(const b of this.bombs){if(!b.alive)continue;b.x+=b.vx*dt;b.y+=b.vy*dt;b.vz-=this.cfg.bombGravity*dt;b.z+=b.vz*dt;if(b.z<=this.cfg.terrainHeight){b.alive=false;const miss=Math.hypot(b.x,b.y);s.effects.push({x:b.x,y:b.y,born:time,kill:false});if(miss<=this.cfg.bombHitRadius){s.hits=Math.min(s.cfg.maxPlayerHits,s.hits+this.cfg.bombDamageHits);s.addLog('Bomb impact • battery hit '+s.hits+'/'+s.cfg.maxPlayerHits);if(s.hits>=s.cfg.maxPlayerHits){s.ended=true;s.addLog('Battery lost • exercise ended');}}else if(miss<8)s.addLog('Bomb impact missed battery');}}
