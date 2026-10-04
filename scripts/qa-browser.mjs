@@ -34,5 +34,18 @@ await page.setViewportSize({width:915,height:412});await page.screenshot({path:'
 const broken=await page.evaluate(()=>[...document.images].filter(i=>!i.naturalWidth).map(i=>i.src));assert.deepEqual(broken,[]);
 await page.locator('#speed').click();assert.equal(await page.evaluate(()=>window.AirDefense.state.timeScale),2);await page.locator('#speed').click();await page.locator('#speed').click();assert.equal(await page.evaluate(()=>window.AirDefense.state.timeScale),8);
 assert.equal(await page.evaluate(()=>window.AirDefense.state.paused),true);const pausedTime=await page.evaluate(()=>window.AirDefense.simulation.time);await page.waitForTimeout(150);assert.equal(await page.evaluate(()=>window.AirDefense.simulation.time),pausedTime);
-assert.deepEqual(errors,[]);console.log('UI PASS: menu, guide, 25-entry catalogue, pause, time speed, contact selection, fire, lock, unlock, auto, IRST, radar OFF, RESET, phone layout, icon paths.');
+// Exercise the new behavior through the same UI and physical simulation.
+await page.setViewportSize({width:1680,height:945});
+await page.evaluate(()=>{window.AirDefense.start();window.AirDefense.pause();window.AirDefense.simulation.step(150);window.AirDefense.render();});
+assert.match(await page.locator('#battery-title').textContent(),/INCOMING MISSILE/);
+const incoming=page.locator('.track-row').first();assert.match(await incoming.textContent(),/H\d+ MISSILE/);await incoming.click();
+await page.evaluate(()=>window.AirDefense.render());assert.equal(await page.locator('#fire').isDisabled(),false);
+assert.match(await page.locator('#target-info').textContent(),/MISSILE/);
+await page.screenshot({path:'test-output/incoming-missiles.png'});
+await page.setViewportSize({width:915,height:412});await page.screenshot({path:'test-output/incoming-phone.png'});
+await page.locator('#fire').click();await page.evaluate(()=>{window.AirDefense.simulation.step(45);window.AirDefense.render();});
+assert.ok(await page.evaluate(()=>window.AirDefense.simulation.intercepts>=1));
+assert.match(await page.locator('#score').textContent(),/INT 1/);assert.match(await page.locator('#log').textContent(),/incoming missile intercepted/);
+await page.setViewportSize({width:1680,height:945});await page.screenshot({path:'test-output/interception.png'});
+assert.deepEqual(errors,[]);console.log('UI PASS: menu, guide, catalogue, pause/time controls, selection, fire, lock/unlock, auto, IRST, radar OFF, RESET, desktop/phone layouts, icons, incoming warning/priority, missile selection and physical interception.');
 await browser.close();

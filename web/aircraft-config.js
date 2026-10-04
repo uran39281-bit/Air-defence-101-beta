@@ -4,12 +4,12 @@ export const AIRCRAFT = Object.freeze({
   'Su-27': {name:'Su-27', role:'Air-superiority fighter', mission:'BOMB STRIKE',
     maxSpeed:2400, lowSpeed:1400, referenceAltitude:12000, ceiling:16000,
     structuralG:11, commandedG:9, maneuver:8, stealth:0, signature:1,
-    presets:['WP-1','WP-0'], bombs:4, rwr:'RWR-S27', countermeasures:96,
+    presets:['WP-1','WP-3','WP-0'], bombs:4, missiles:2, missileWeaponID:'KH31PD', rwr:'RWR-S27', countermeasures:96,
     aggression:.55, source:{variant:'Su-27',mode:'upgraded realistic',basis:'Rounded values adopted from update guide'}},
   'MiG-29': {name:'MiG-29', role:'Frontline fighter', mission:'BOMB STRIKE',
     maxSpeed:2350, lowSpeed:1450, referenceAltitude:14000, ceiling:16000,
     structuralG:13, commandedG:9, maneuver:8.5, stealth:0, signature:.9,
-    presets:['WP-1','WP-0'], bombs:2, rwr:'RWR-M29', countermeasures:60,
+    presets:['WP-1','WP-3','WP-0'], bombs:2, missiles:2, missileWeaponID:'KH38MT', rwr:'RWR-M29', countermeasures:60,
     aggression:.55, source:{variant:'MiG-29 (9-13)',mode:'upgraded realistic',basis:'Rounded values adopted from update guide'}},
   'MiG-25': {name:'MiG-25', role:'High-altitude interceptor', mission:'INTRUSION / DIVERSION',
     maxSpeed:2940, lowSpeed:1200, referenceAltitude:18000, ceiling:25000,
@@ -19,7 +19,7 @@ export const AIRCRAFT = Object.freeze({
   'Tu-160': {name:'Tu-160', role:'Strategic bomber / missile carrier', mission:'BOMB STRIKE',
     maxSpeed:2200, lowSpeed:1000, referenceAltitude:12000, ceiling:16000,
     structuralG:3, commandedG:2, maneuver:1.5, stealth:0, signature:1.4,
-    presets:['WP-1','WP-0'], bombs:8, rwr:'RWR-T160', countermeasures:128,
+    presets:['WP-1','WP-3','WP-0'], bombs:8, missiles:4, missileWeaponID:'KH29TD', rwr:'RWR-T160', countermeasures:128,
     aggression:.35, source:{variant:null,mode:null,basis:'Entire numerical profile is provisional gameplay data'}}
 });
 
@@ -56,11 +56,24 @@ export const AI_DEFAULTS = Object.freeze({
   bombStableClimb:.015,bombMinAltitude:.6,bombMaxAltitude:12,bombMinSpeed:.1,bombMaxGameplaySpeed:.8,exitWaypointRadius:8,bombDamageHits:1,
   bombExplosive:250,bombDefinition:'BETA-BOMB-250',bombSalvo:1,
   terrainHeight:0,notchSupported:false,notchQuality:.75,
-  heatReduction:.65,heatEnergyPenalty:.2
+  heatReduction:.65,heatEnergyPenalty:.2,
+  routeVariation:false,routeWaypointRadius:8,routeLookaheadSeconds:12,
+  missionMaxSeconds:1600,missileWindowSeconds:35,missileRepositionDegrees:35,
+  missileLaunchEnergy:.35,missileSalvoLimit:null
+});
+// Editable mission tactics are gameplay choices, not claims about real doctrine.
+// Each spawn samples once; routes and personality never jitter every frame.
+export const MISSION_TACTICS = Object.freeze({
+  'DOGLEG STRIKE':{preset:'WP-1',offsetMin:15,offsetMax:28,altitude:2.5,cruise:.84},
+  'LOW INGRESS':{preset:'WP-1',offsetMin:12,offsetMax:22,altitude:1.2,cruise:.75},
+  'FLANK STRIKE':{preset:'WP-1',offsetMin:25,offsetMax:40,altitude:3.2,cruise:.8},
+  'STANDOFF STRIKE':{preset:'WP-3',offsetMin:8,offsetMax:16,altitude:6,cruise:.82,salvo:1},
+  'FLANK LAUNCH':{preset:'WP-3',offsetMin:20,offsetMax:35,altitude:4,cruise:.78,salvo:2},
+  'CROSSING DIVERSION':{preset:'WP-0',offsetMin:18,offsetMax:35,altitude:null,cruise:.9}
 });
 export const WEAPON_PRESETS = Object.freeze({
   'WP-0':{id:'WP-0',category:'NONE',weapon:null,cooldown:0},
   'WP-1':{id:'WP-1',category:'UNGUIDED_BOMB',weapon:'BETA-BOMB-250',cooldown:.65},
   'WP-2':{id:'WP-2',category:'UNGUIDED_ROCKET',enabled:false},
-  'WP-3':{id:'WP-3',category:'AIR_TO_GROUND_MISSILE',enabled:false}
+  'WP-3':{id:'WP-3',category:'AIR_TO_GROUND_MISSILE',enabled:true}
 });

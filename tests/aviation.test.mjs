@@ -120,14 +120,14 @@ test('two interrupted attack runs cause permanent mission abort',()=>{
   transition(a,'ATTACK RUN',10);transition(a,'MISSILE EVASION',11);decideAircraft(a,12);assert.equal(a.ai.failedRuns,2);assert.equal(a.ai.state,'DISENGAGE');
 });
 test('bombs release from valid trajectory, remain airborne after carrier destruction, and impact later',()=>{
-  const s=sim(),a=s.spawn();s.radar=false;a.rwr={...RWR_TIERS[0]};a.cfg.visualRange=0;
+  const s=sim(),a=s.spawn(0,{preset:'WP-1',routeVariation:false});s.radar=false;a.rwr={...RWR_TIERS[0]};a.cfg.visualRange=0;
   Object.assign(a,{x:0,y:-5,z:2.5,speed:.2,angle:Math.PI/2,verticalSpeed:0});
   const t=Math.sqrt(2*a.z/AI_DEFAULTS.bombGravity);a.y=-a.speed*t;transition(a,'ATTACK RUN',0);a.ai.nextDecision=100;
   a.releaseStableFor=a.cfg.bombStableDwell;assert.ok(releaseSolution(a).valid);s.step(.05);assert.equal(s.aviation.bombs.length,1);assert.equal(s.hits,0);assert.equal(a.ordnance,3);
   a.alive=false;a.ai.state='DESTROYED';s.step(t-1);assert.equal(s.hits,0);s.step(2);assert.equal(s.hits,1);assert.equal(s.aviation.bombs.length,0);
 });
 test('search caution permits a close mission release; no instant battery hit on overflight',()=>{
-  const s=sim(),a=s.spawn();Object.assign(a,{x:0,y:-4,z:2.5,speed:.24,angle:Math.PI/2});warn(a,'SEARCH');decideAircraft(a,.71);decideAircraft(a,5);
+  const s=sim(),a=s.spawn(0,{preset:'WP-1',routeVariation:false});Object.assign(a,{x:0,y:-4,z:2.5,speed:.24,angle:Math.PI/2});warn(a,'SEARCH');decideAircraft(a,.71);decideAircraft(a,5);
   assert.equal(a.ai.state,'ATTACK RUN');s.radar=false;s.step(.1);assert.equal(s.hits,0);
 });
 test('traces are development-only and all sensing, reactions, flight and decoys use simulation time',()=>{
@@ -137,6 +137,6 @@ test('traces are development-only and all sensing, reactions, flight and decoys 
   const normal=sim();assert.equal(normal.aviation.trace,null);
 });
 
-test('unopposed default exercise reaches delayed bomb impacts even with continuing search warnings',()=>{
-  const s=new Simulation();s.step(720);assert.equal(s.hits,4);assert.ok(s.time>100);assert.ok(s.log.some(e=>e.message.includes('Bomb impact')));assert.equal(s.fired,0);
+test('unopposed bomb exercise reaches delayed impacts even with continuing search warnings',()=>{
+  const s=new Simulation({hostileMissilesEnabled:false});s.step(720);assert.equal(s.hits,4);assert.ok(s.time>100);assert.ok(s.log.some(e=>e.message.includes('Bomb impact')));assert.equal(s.fired,0);
 });

@@ -19,6 +19,7 @@ export const BETA = Object.freeze({
   damageScale:.020, targetHealth:100, scenarioSeconds:720,
   spawnInterval:36, maxAircraft:12, maxPlayerHits:4,
   idTypeSeconds:12, idAllegianceSeconds:20, idEvidenceRange:220,
+  hostileMissilesEnabled:true, missileDetectionFactor:.6, missileClassificationSweeps:2,
   startAircraft:6, seed:225101
 });
 export function sweepInterval(rating=BETA.scanRating){return BETA.slowSweep-(Math.max(1,Math.min(6,rating))-1)/5*(BETA.slowSweep-BETA.fastSweep);}

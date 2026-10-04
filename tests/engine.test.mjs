@@ -5,8 +5,8 @@ import {Simulation,rangeOf} from '../web/engine.js';
 import {RWR_TIERS} from '../web/aircraft-config.js';
 import {EQUIPMENT,ICONS,sweepInterval} from '../web/config.js';
 
-function exercise(options={}){return new Simulation({startAircraft:0,spawnInterval:1e9,scenarioSeconds:1e9,...options});}
-function aircraft(sim,n=1){for(let i=0;i<n;i++){const a=sim.spawn(i);a.x=10+i*5;a.y=-100;a.z=2;a.speed=.2;a.angle=Math.PI/2;}}
+function exercise(options={}){return new Simulation({startAircraft:0,spawnInterval:1e9,scenarioSeconds:1e9,hostileMissilesEnabled:false,...options});}
+function aircraft(sim,n=1){for(let i=0;i<n;i++){const a=sim.spawn(i,{routeVariation:false});a.x=10+i*5;a.y=-100;a.z=2;a.speed=.2;a.angle=Math.PI/2;}}
 function measureTwice(sim){for(const a of sim.aircraft)sim.measure(a);sim.time+=6;for(const a of sim.aircraft){a.y+=1.2;sim.measure(a);}sim.allocateTracks();sim.selected=sim.aircraft[0].id;}
 
 test('six detections remain visible with exactly two tracked contacts',()=>{const s=exercise({equipment:{tracks:2}});aircraft(s,6);measureTwice(s);assert.equal(s.contacts.size,6);assert.equal(s.trackCount(),2);const untracked=[...s.contacts.values()].find(c=>!c.tracked);assert.equal(untracked.speed,undefined);const before=s.estimate(untracked);s.time+=2;assert.deepEqual(s.estimate(untracked),before);});
